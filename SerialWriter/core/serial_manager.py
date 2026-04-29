@@ -85,11 +85,11 @@ class _ReadThread(QThread):
     # 发生错误信号 (错误描述)
     read_error = Signal(str)
 
-    def __init__(self, ser: serial.Serial, parent=None):
+    def __init__(self, ser: serial.Serial, serial_mutex: QMutex, parent=None):
         super().__init__(parent)
         self._serial = ser
+        self._serial_mutex = serial_mutex
         self._running = False
-        self._mutex = QMutex()
 
     def run(self):
         """线程主循环，持续读取串口数据"""
@@ -98,12 +98,18 @@ class _ReadThread(QThread):
             try:
                 if self._serial is None or not self._serial.is_open:
                     break
-                # wait_for_ready_read 等待数据到达，超时 0.5 秒
-                available = self._serial.in_waiting
-                if available > 0:
-                    data = self._serial.read(available)
-                    if data:
-                        self.data_received.emit(data)
+                # 加锁保护对串口对象的并发访问
+                self._serial_mutex.lock()
+                try:
+                    available = self._serial.in_waiting
+                    if available > 0:
+                        data = self._serial.read(available)
+                    else:
+                        data = None
+                finally:
+                    self._serial_mutex.unlock()
+                if data:
+                    self.data_received.emit(data)
                 else:
                     # 没有数据时短暂休眠，避免 CPU 空转
                     self.msleep(50)
@@ -144,6 +150,7 @@ class SerialManager(QObject):
         self._read_thread: Optional[_ReadThread] = None
         self._open_worker: Optional[_OpenWorker] = None
         self._busy = False
+        self._serial_mutex = QMutex()  # 保护串口对象并发读写
 
     @staticmethod
     def scan_ports() -> list[dict]:
@@ -209,10 +216,14 @@ class SerialManager(QObject):
     def _on_open_done(self, ser: serial.Serial):
         """后台线程打开成功"""
         self._open_worker = None
-        self._serial = ser
+        self._serial_mutex.lock()
+        try:
+            self._serial = ser
+        finally:
+            self._serial_mutex.unlock()
 
         # 启动后台读取线程
-        self._read_thread = _ReadThread(self._serial)
+        self._read_thread = _ReadThread(self._serial, self._serial_mutex)
         self._read_thread.data_received.connect(self._on_data_received)
         self._read_thread.read_error.connect(self._on_read_error)
         self._read_thread.start()
@@ -223,7 +234,11 @@ class SerialManager(QObject):
     def _on_open_failed(self, error_msg: str):
         """后台线程打开失败"""
         self._open_worker = None
-        self._serial = None
+        self._serial_mutex.lock()
+        try:
+            self._serial = None
+        finally:
+            self._serial_mutex.unlock()
         self._set_busy(False)
         self.error_occurred.emit(error_msg)
 
@@ -246,22 +261,26 @@ class SerialManager(QObject):
             self._read_thread.stop()
             self._read_thread = None
 
-        port_name = ""
-        if self._serial is not None:
-            try:
-                port_name = self._serial.port
-                if self._serial.is_open:
-                    self._serial.close()
-            except serial.SerialException:
-                pass
-            self._serial = None
+        self._serial_mutex.lock()
+        try:
+            port_name = ""
+            if self._serial is not None:
+                try:
+                    port_name = self._serial.port
+                    if self._serial.is_open:
+                        self._serial.close()
+                except serial.SerialException:
+                    pass
+                self._serial = None
+        finally:
+            self._serial_mutex.unlock()
 
         self.port_closed.emit(port_name)
         return True
 
     def send(self, data: bytes) -> bool:
         """
-        发送数据到串口。
+        发送数据到串口（线程安全，不阻塞 UI）。
 
         参数:
             data: 要发送的字节数据
@@ -274,16 +293,26 @@ class SerialManager(QObject):
             return False
 
         try:
-            self._serial.write(data)
-            self._serial.flush()
+            self._serial_mutex.lock()
+            try:
+                self._serial.write(data)
+                # 注意：不调用 flush()，虚拟串口（蓝牙/扩展坞）
+                # 可能永远等不到硬件应答导致死锁。
+                # write() 已将数据交给 OS 缓冲区，对 5 字节帧足够。
+            finally:
+                self._serial_mutex.unlock()
             return True
         except serial.SerialException as e:
             self.error_occurred.emit(f"发送失败: {e}")
             return False
 
     def is_open(self) -> bool:
-        """检查串口是否已打开"""
-        return self._serial is not None and self._serial.is_open
+        """检查串口是否已打开（线程安全）"""
+        self._serial_mutex.lock()
+        try:
+            return self._serial is not None and self._serial.is_open
+        finally:
+            self._serial_mutex.unlock()
 
     # —— 内部槽函数 —— #
 
