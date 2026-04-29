@@ -12,7 +12,7 @@ dist/
 config.json
 
 # IDE / 系统
-.vscode/
+.vscode/settings.json
 .idea/
 .claude/
 Thumbs.db
