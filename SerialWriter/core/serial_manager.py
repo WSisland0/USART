@@ -103,15 +103,22 @@ class SerialManager(QObject):
         self._read_thread: Optional[_ReadThread] = None
 
     @staticmethod
-    def scan_ports() -> list[str]:
+    def scan_ports() -> list[dict]:
         """
-        扫描系统可用串口。
+        扫描系统可用串口，返回设备名及描述信息。
 
         返回:
-            端口名列表，例如 ["COM1", "COM3", "COM5"]
+            列表，每项为 {"device": "COM3", "description": "USB-SERIAL CH340 (COM3)", "hwid": "USB VID:PID=1A86:7523"}
         """
         ports = serial.tools.list_ports.comports()
-        return [p.device for p in sorted(ports)]
+        result = []
+        for p in sorted(ports, key=lambda p: p.device):
+            result.append({
+                "device": p.device,
+                "description": p.description or "",
+                "hwid": p.hwid or "",
+            })
+        return result
 
     def open(self, port: str, baud_rate: int, data_bits: int,
              parity: str, stop_bits: str) -> bool:

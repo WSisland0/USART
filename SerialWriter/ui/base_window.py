@@ -350,7 +350,7 @@ class BaseWindow(QMainWindow):
         self._on_refresh_ports()
         saved_port = cfg.get("port", "")
         if saved_port:
-            idx = self._port_combo.findText(saved_port)
+            idx = self._port_combo.findData(saved_port)
             if idx >= 0:
                 self._port_combo.setCurrentIndex(idx)
 
@@ -358,22 +358,28 @@ class BaseWindow(QMainWindow):
 
     def _on_refresh_ports(self):
         """刷新可用串口列表"""
-        current = self._port_combo.currentText()
+        current = self._port_combo.currentData()
         self._port_combo.clear()
         ports = SerialManager.scan_ports()
         if ports:
-            self._port_combo.addItems(ports)
-            idx = self._port_combo.findText(current)
+            for p in ports:
+                # 显示: "COM3 - USB-SERIAL CH340 (COM3)"，设备名存为 userData
+                if p.get("description"):
+                    display = f"{p['device']} - {p['description']}"
+                else:
+                    display = p["device"]
+                self._port_combo.addItem(display, p["device"])
+            idx = self._port_combo.findData(current)
             if idx >= 0:
                 self._port_combo.setCurrentIndex(idx)
         else:
-            self._port_combo.addItem("(无可用串口)")
+            self._port_combo.addItem("(无可用串口)", "")
         self._log_mgr.add_info(f"扫描到 {len(ports)} 个串口")
 
     def _on_open_port(self):
         """打开串口"""
-        port = self._port_combo.currentText()
-        if not port or port.startswith("("):
+        port = self._port_combo.currentData()
+        if not port:
             QMessageBox.warning(self, "提示", "请先选择有效的串口")
             return
 
@@ -556,7 +562,7 @@ class BaseWindow(QMainWindow):
 
     def _save_current_config(self):
         """保存当前界面配置到文件"""
-        self._config["port"] = self._port_combo.currentText()
+        self._config["port"] = self._port_combo.currentData()
         self._config["baud_rate"] = int(self._baud_combo.currentText())
         self._config["data_bits"] = int(self._data_bits_combo.currentText())
         self._config["parity"] = self._parity_combo.currentText()
