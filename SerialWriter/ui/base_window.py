@@ -311,6 +311,7 @@ class BaseWindow(QMainWindow):
         self._serial_mgr.port_opened.connect(self._on_port_opened)
         self._serial_mgr.port_closed.connect(self._on_port_closed)
         self._serial_mgr.busy_changed.connect(self._on_serial_busy_changed)
+        self._serial_mgr.send_done.connect(self._on_send_done)
 
         # —— 按钮 ——
         self._btn_refresh.clicked.connect(self._on_refresh_ports)
@@ -440,7 +441,7 @@ class BaseWindow(QMainWindow):
         self._btn_send.setEnabled(True)
 
     def _on_send(self):
-        """发送数据帧"""
+        """发送数据帧（异步，不阻塞 UI）"""
         if not self._serial_mgr.is_open():
             QMessageBox.warning(self, "提示", "请先打开串口再发送")
             return
@@ -458,14 +459,16 @@ class BaseWindow(QMainWindow):
             QMessageBox.warning(self, "提示", str(e))
             return
 
-        # 发送
-        success = self._serial_mgr.send(frame)
-        if success:
-            hex_str = to_hex_string(frame)
-            self._log_mgr.add_tx(hex_str)
-            self._last_sent_value = value
-            # 保存配置
-            self._save_current_config()
+        # 异步发送，结果由 send_done 信号通知
+        self._serial_mgr.send(frame)
+        hex_str = to_hex_string(frame)
+        self._log_mgr.add_tx(hex_str)
+        self._last_sent_value = value
+        self._save_current_config()
+
+    def _on_send_done(self):
+        """发送完成（成功或失败），可用于恢复按钮状态等"""
+        pass  # 预留扩展
 
     def _on_step(self, amount: int):
         """微调数值（不发送）"""

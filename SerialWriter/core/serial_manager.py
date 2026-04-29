@@ -65,12 +65,43 @@ class _OpenWorker(QThread):
             ser.parity = _PARITY_MAP[self._parity]
             ser.stopbits = _STOPBITS_MAP[self._stop_bits]
             ser.timeout = 0.1
+            ser.write_timeout = 0.5  # write() 超时，防止虚拟串口阻塞
             ser.open()
             self.opened.emit(ser)
         except serial.SerialException as e:
             self.failed.emit(f"打开串口失败 ({self._port}): {e}")
         except KeyError as e:
             self.failed.emit(f"参数错误: 无效的 {e}")
+
+
+class _SendWorker(QThread):
+    """
+    后台发送线程。
+
+    write() 在虚拟串口（蓝牙/扩展坞）上可能阻塞，
+    放在工作线程中执行可避免冻结 UI。
+    """
+
+    sent = Signal()          # 发送成功
+    failed = Signal(str)     # 错误描述
+
+    def __init__(self, ser: serial.Serial, data: bytes,
+                 serial_mutex: QMutex, parent=None):
+        super().__init__(parent)
+        self._serial = ser
+        self._data = data
+        self._serial_mutex = serial_mutex
+
+    def run(self):
+        try:
+            self._serial_mutex.lock()
+            try:
+                self._serial.write(self._data)
+            finally:
+                self._serial_mutex.unlock()
+            self.sent.emit()
+        except serial.SerialException as e:
+            self.failed.emit(f"发送失败: {e}")
 
 
 class _ReadThread(QThread):
@@ -143,12 +174,14 @@ class SerialManager(QObject):
     port_opened = Signal(str)
     port_closed = Signal(str)
     busy_changed = Signal(bool)
+    send_done = Signal()  # 发送完成（成功或失败）
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._serial: Optional[serial.Serial] = None
         self._read_thread: Optional[_ReadThread] = None
         self._open_worker: Optional[_OpenWorker] = None
+        self._send_worker: Optional[_SendWorker] = None
         self._busy = False
         self._serial_mutex = QMutex()  # 保护串口对象并发读写
 
@@ -257,6 +290,13 @@ class SerialManager(QObject):
             self._open_worker = None
             self._set_busy(False)
 
+        # 取消正在进行的发送
+        if self._send_worker is not None and self._send_worker.isRunning():
+            self._send_worker.sent.disconnect(self._on_send_done)
+            self._send_worker.failed.disconnect(self._on_send_failed)
+            self._send_worker.wait(2000)
+            self._send_worker = None
+
         if self._read_thread is not None:
             self._read_thread.stop()
             self._read_thread = None
@@ -278,33 +318,43 @@ class SerialManager(QObject):
         self.port_closed.emit(port_name)
         return True
 
-    def send(self, data: bytes) -> bool:
+    def send(self, data: bytes):
         """
-        发送数据到串口（线程安全，不阻塞 UI）。
+        异步发送数据到串口（不阻塞 UI）。
 
         参数:
             data: 要发送的字节数据
 
-        返回:
-            发送成功返回 True，失败发射 error_occurred 并返回 False
+        注:
+            结果通过 send_done / error_occurred 信号异步返回。
+            串口未打开时同步发射 error_occurred 并立即返回。
         """
         if self._serial is None or not self._serial.is_open:
             self.error_occurred.emit("发送失败: 串口未打开")
-            return False
+            self.send_done.emit()
+            return
 
-        try:
-            self._serial_mutex.lock()
-            try:
-                self._serial.write(data)
-                # 注意：不调用 flush()，虚拟串口（蓝牙/扩展坞）
-                # 可能永远等不到硬件应答导致死锁。
-                # write() 已将数据交给 OS 缓冲区，对 5 字节帧足够。
-            finally:
-                self._serial_mutex.unlock()
-            return True
-        except serial.SerialException as e:
-            self.error_occurred.emit(f"发送失败: {e}")
-            return False
+        # 防呆：上一次发送还在进行中
+        if self._send_worker is not None and self._send_worker.isRunning():
+            return
+
+        self._send_worker = _SendWorker(
+            self._serial, data, self._serial_mutex
+        )
+        self._send_worker.sent.connect(self._on_send_done)
+        self._send_worker.failed.connect(self._on_send_failed)
+        self._send_worker.start()
+
+    def _on_send_done(self):
+        """后台发送成功"""
+        self._send_worker = None
+        self.send_done.emit()
+
+    def _on_send_failed(self, error_msg: str):
+        """后台发送失败"""
+        self._send_worker = None
+        self.error_occurred.emit(error_msg)
+        self.send_done.emit()
 
     def is_open(self) -> bool:
         """检查串口是否已打开（线程安全）"""
