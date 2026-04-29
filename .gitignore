@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 运行时用户配置（含个人串口设置）
+config.json
+
+# IDE / 系统
+.vscode/
+.idea/
+.claude/
+Thumbs.db
