@@ -23,30 +23,40 @@ from ui.industrial_window import IndustrialWindow
 from ui.modern_window import ModernWindow
 
 
-def main():
+def main(force_style: str = None):
+    """
+    启动主窗口。
+
+    参数:
+        force_style: "industrial" | "modern" | None。
+                     传 None 时按 命令行 > exe文件名 > 配置文件 顺序确定风格。
+    """
     app = QApplication(sys.argv)
     app.setApplicationName("Serial Writer Tool")
     app.setOrganizationName("SerialWriter")
 
-    # 加载配置
     config = load_config()
 
-    # 命令行参数覆盖配置文件
+    # 确定风格（优先级: force_style > 命令行 > exe文件名 > 配置 > 默认 modern）
     style = config.get("style", "modern")
     if "--industrial" in sys.argv:
         style = "industrial"
     elif "--modern" in sys.argv:
         style = "modern"
+    if force_style:
+        style = force_style
+    # PyInstaller 打包后，从 exe 文件名检测风格
+    exe_name = os.path.basename(sys.executable).lower()
+    if "工业风" in exe_name or "industrial" in exe_name:
+        style = "industrial"
+    elif "现代风" in exe_name or "modern" in exe_name:
+        style = "modern"
 
-    # 根据风格创建对应窗口
     if style == "industrial":
         window = IndustrialWindow()
-        print("[Main] 启动工业风窗口")
     else:
         window = ModernWindow()
-        print("[Main] 启动现代风窗口")
 
-    # 更新配置中的风格
     config["style"] = style
     save_config(config)
 
