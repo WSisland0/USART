@@ -4,6 +4,8 @@
 使用 PySide6 QThread 在后台持续读取串口数据，
 通过 Signal 将数据传递到 UI 层，避免阻塞主线程。
 
+串口打开操作也在工作线程中执行，避免 open() 调用阻塞 UI。
+
 异常处理覆盖：
 - 串口被占用
 - 打开失败
@@ -18,6 +20,57 @@ import serial.tools.list_ports
 from PySide6.QtCore import QObject, QThread, Signal, QMutex
 
 from core.protocol import to_hex_string
+
+# —— 校验位映射 ——
+_PARITY_MAP = {
+    "None": serial.PARITY_NONE,
+    "Even": serial.PARITY_EVEN,
+    "Odd":  serial.PARITY_ODD,
+}
+
+# —— 停止位映射 ——
+_STOPBITS_MAP = {
+    "1":   serial.STOPBITS_ONE,
+    "1.5": serial.STOPBITS_ONE_POINT_FIVE,
+    "2":   serial.STOPBITS_TWO,
+}
+
+
+class _OpenWorker(QThread):
+    """
+    后台打开串口线程。
+
+    打开串口是阻塞 I/O 操作（设备驱动协商），放在工作线程中
+    执行可避免冻结 UI。完成后通过 Signal 将串口对象或错误传回。
+    """
+
+    opened = Signal(object)  # serial.Serial 对象
+    failed = Signal(str)     # 错误描述
+
+    def __init__(self, port: str, baud_rate: int, data_bits: int,
+                 parity: str, stop_bits: str, parent=None):
+        super().__init__(parent)
+        self._port = port
+        self._baud_rate = baud_rate
+        self._data_bits = data_bits
+        self._parity = parity
+        self._stop_bits = stop_bits
+
+    def run(self):
+        try:
+            ser = serial.Serial()
+            ser.port = self._port
+            ser.baudrate = self._baud_rate
+            ser.bytesize = self._data_bits
+            ser.parity = _PARITY_MAP[self._parity]
+            ser.stopbits = _STOPBITS_MAP[self._stop_bits]
+            ser.timeout = 0.1
+            ser.open()
+            self.opened.emit(ser)
+        except serial.SerialException as e:
+            self.failed.emit(f"打开串口失败 ({self._port}): {e}")
+        except KeyError as e:
+            self.failed.emit(f"参数错误: 无效的 {e}")
 
 
 class _ReadThread(QThread):
@@ -76,31 +129,21 @@ class SerialManager(QObject):
         error_occurred(str): 发生错误
         port_opened(str): 串口已打开 (端口名)
         port_closed(str): 串口已关闭 (端口名)
+        busy_changed(bool): 忙状态变化（正在打开串口时通知 UI 禁用按钮）
     """
 
     data_received = Signal(bytes)
     error_occurred = Signal(str)
     port_opened = Signal(str)
     port_closed = Signal(str)
-
-    # —— 校验位映射 ——
-    _PARITY_MAP = {
-        "None": serial.PARITY_NONE,
-        "Even": serial.PARITY_EVEN,
-        "Odd": serial.PARITY_ODD,
-    }
-
-    # —— 停止位映射 ——
-    _STOPBITS_MAP = {
-        "1": serial.STOPBITS_ONE,
-        "1.5": serial.STOPBITS_ONE_POINT_FIVE,
-        "2": serial.STOPBITS_TWO,
-    }
+    busy_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._serial: Optional[serial.Serial] = None
         self._read_thread: Optional[_ReadThread] = None
+        self._open_worker: Optional[_OpenWorker] = None
+        self._busy = False
 
     @staticmethod
     def scan_ports() -> list[dict]:
@@ -120,10 +163,20 @@ class SerialManager(QObject):
             })
         return result
 
+    def _set_busy(self, busy: bool):
+        """设置忙状态，变化时发射信号"""
+        if self._busy != busy:
+            self._busy = busy
+            self.busy_changed.emit(busy)
+
+    def is_busy(self) -> bool:
+        """是否正在执行异步操作（打开中）"""
+        return self._busy
+
     def open(self, port: str, baud_rate: int, data_bits: int,
-             parity: str, stop_bits: str) -> bool:
+             parity: str, stop_bits: str):
         """
-        打开串口。
+        异步打开串口（不阻塞 UI）。
 
         参数:
             port:      端口号，如 "COM3"
@@ -132,41 +185,47 @@ class SerialManager(QObject):
             parity:    校验位，"None"/"Even"/"Odd"
             stop_bits: 停止位，"1"/"1.5"/"2"
 
-        返回:
-            成功返回 True，失败发射 error_occurred 信号并返回 False
+        注:
+            结果通过 port_opened / error_occurred 信号异步返回。
+            可通过 is_busy() / busy_changed 检测操作是否完成。
         """
+        # 防呆：正在打开中，忽略重复请求
+        if self._busy:
+            return
+
         # 如果已经打开，先关闭
         if self.is_open():
             self.close()
 
-        try:
-            self._serial = serial.Serial()
-            self._serial.port = port
-            self._serial.baudrate = baud_rate
-            self._serial.bytesize = data_bits
-            self._serial.parity = self._PARITY_MAP[parity]
-            self._serial.stopbits = self._STOPBITS_MAP[stop_bits]
-            self._serial.timeout = 0.1  # 读超时
+        self._set_busy(True)
 
-            self._serial.open()
+        self._open_worker = _OpenWorker(
+            port, baud_rate, data_bits, parity, stop_bits
+        )
+        self._open_worker.opened.connect(self._on_open_done)
+        self._open_worker.failed.connect(self._on_open_failed)
+        self._open_worker.start()
 
-            # 启动后台读取线程
-            self._read_thread = _ReadThread(self._serial)
-            self._read_thread.data_received.connect(self._on_data_received)
-            self._read_thread.read_error.connect(self._on_read_error)
-            self._read_thread.start()
+    def _on_open_done(self, ser: serial.Serial):
+        """后台线程打开成功"""
+        self._open_worker = None
+        self._serial = ser
 
-            self.port_opened.emit(port)
-            return True
+        # 启动后台读取线程
+        self._read_thread = _ReadThread(self._serial)
+        self._read_thread.data_received.connect(self._on_data_received)
+        self._read_thread.read_error.connect(self._on_read_error)
+        self._read_thread.start()
 
-        except serial.SerialException as e:
-            self._serial = None
-            self.error_occurred.emit(f"打开串口失败 ({port}): {e}")
-            return False
-        except KeyError as e:
-            self._serial = None
-            self.error_occurred.emit(f"参数错误: 无效的 {e}")
-            return False
+        self._set_busy(False)
+        self.port_opened.emit(ser.port)
+
+    def _on_open_failed(self, error_msg: str):
+        """后台线程打开失败"""
+        self._open_worker = None
+        self._serial = None
+        self._set_busy(False)
+        self.error_occurred.emit(error_msg)
 
     def close(self) -> bool:
         """
@@ -175,6 +234,14 @@ class SerialManager(QObject):
         返回:
             成功返回 True
         """
+        # 如果正在打开中，先等待打开线程完成再关闭
+        if self._open_worker is not None and self._open_worker.isRunning():
+            self._open_worker.opened.disconnect(self._on_open_done)
+            self._open_worker.failed.disconnect(self._on_open_failed)
+            self._open_worker.wait(2000)
+            self._open_worker = None
+            self._set_busy(False)
+
         if self._read_thread is not None:
             self._read_thread.stop()
             self._read_thread = None

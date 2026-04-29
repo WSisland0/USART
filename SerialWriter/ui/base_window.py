@@ -310,6 +310,7 @@ class BaseWindow(QMainWindow):
         self._serial_mgr.error_occurred.connect(self._on_serial_error)
         self._serial_mgr.port_opened.connect(self._on_port_opened)
         self._serial_mgr.port_closed.connect(self._on_port_closed)
+        self._serial_mgr.busy_changed.connect(self._on_serial_busy_changed)
 
         # —— 按钮 ——
         self._btn_refresh.clicked.connect(self._on_refresh_ports)
@@ -377,10 +378,14 @@ class BaseWindow(QMainWindow):
         self._log_mgr.add_info(f"扫描到 {len(ports)} 个串口")
 
     def _on_open_port(self):
-        """打开串口"""
+        """打开串口（异步，不阻塞 UI）"""
         port = self._port_combo.currentData()
         if not port:
             QMessageBox.warning(self, "提示", "请先选择有效的串口")
+            return
+
+        # 防呆：正在打开中，忽略重复点击
+        if self._serial_mgr.is_busy():
             return
 
         baud = int(self._baud_combo.currentText())
@@ -388,15 +393,26 @@ class BaseWindow(QMainWindow):
         parity = self._parity_combo.currentText()
         stop_bits = self._stop_bits_combo.currentText()
 
-        success = self._serial_mgr.open(port, baud, data_bits, parity, stop_bits)
-        if success:
-            self._log_mgr.add_info(f"正在打开串口 {port}...")
-        # 失败时串口管理器会发射 error_occurred
+        # 异步打开，结果通过 port_opened / error_occurred 信号返回
+        self._serial_mgr.open(port, baud, data_bits, parity, stop_bits)
+        self._log_mgr.add_info(f"正在打开串口 {port}...")
 
     def _on_close_port(self):
         """关闭串口"""
         self._serial_mgr.close()
         self._log_mgr.add_info("串口已关闭")
+
+    def _on_serial_busy_changed(self, busy: bool):
+        """串口管理器忙状态变化，禁用/启用相关控件"""
+        self._btn_open.setEnabled(not busy)
+        self._btn_close.setEnabled(False if busy else self._serial_mgr.is_open())
+        self._port_combo.setEnabled(not busy)
+        self._btn_refresh.setEnabled(not busy)
+        self._btn_send.setEnabled(not busy)
+        if busy:
+            self._status_label.setText(
+                '<span style="color:#F57C00;">⏳ 正在打开...</span>'
+            )
 
     def _on_port_opened(self, port: str):
         """串口打开成功的回调"""
@@ -406,16 +422,22 @@ class BaseWindow(QMainWindow):
         self._btn_open.setEnabled(False)
         self._btn_close.setEnabled(True)
         self._port_combo.setEnabled(False)
+        self._btn_refresh.setEnabled(True)
+        self._btn_send.setEnabled(True)
         self._log_mgr.add_info(f"串口 {port} 已打开")
 
     def _on_port_closed(self, port: str):
         """串口关闭的回调"""
+        if self._serial_mgr.is_busy():
+            return  # 正在打开中，不更新状态
         self._status_label.setText(
             '<span style="color:#9E9E9E;">● 未连接</span>'
         )
         self._btn_open.setEnabled(True)
         self._btn_close.setEnabled(False)
         self._port_combo.setEnabled(True)
+        self._btn_refresh.setEnabled(True)
+        self._btn_send.setEnabled(True)
 
     def _on_send(self):
         """发送数据帧"""
@@ -505,13 +527,15 @@ class BaseWindow(QMainWindow):
     def _on_serial_error(self, error_msg: str):
         """串口错误"""
         self._log_mgr.add_error(error_msg)
-        # 错误时更新状态
+        # 错误时恢复 UI 状态（busy_changed 已由 SerialManager._on_open_failed 触发）
         self._status_label.setText(
             '<span style="color:#9E9E9E;">● 未连接</span>'
         )
         self._btn_open.setEnabled(True)
         self._btn_close.setEnabled(False)
         self._port_combo.setEnabled(True)
+        self._btn_refresh.setEnabled(True)
+        self._btn_send.setEnabled(True)
 
     def _on_receive_mode_changed(self, mode: str):
         """接收显示模式切换"""
