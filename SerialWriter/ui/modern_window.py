@@ -192,4 +192,4 @@ QTextEdit#logText {
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Serial Writer Tool [现代风]")
+        self.setWindowTitle("Serial Writer Tool ")

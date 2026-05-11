@@ -23,14 +23,6 @@ from core.protocol import build_frame, to_hex_string, get_data_byte
 from core.logger import LogManager, LogCategory, LogEntry
 from core.config_manager import load_config, save_config
 
-# ———————— 日志类别对应的 HTML 颜色 ————————
-_LOG_COLORS = {
-    LogCategory.TX:    "#1976D2",  # 蓝色
-    LogCategory.RX:    "#388E3C",  # 绿色
-    LogCategory.ERROR: "#D32F2F",  # 红色
-    LogCategory.INFO:  "#757575",  # 灰色
-}
-
 # ———————— 默认输入值 ————————
 _DEFAULT_DATA_VALUE = 128
 
@@ -53,6 +45,14 @@ def _bytes_to_ascii_str(data: bytes) -> str:
 
 class BaseWindow(QMainWindow):
     """主窗口基类"""
+
+    # 子类可覆盖此字典以适配不同主题的日志颜色
+    _log_colors = {
+        LogCategory.TX:    "#1976D2",  # 蓝色
+        LogCategory.RX:    "#388E3C",  # 绿色
+        LogCategory.ERROR: "#D32F2F",  # 红色
+        LogCategory.INFO:  "#757575",  # 灰色
+    }
 
     def __init__(self):
         super().__init__()
@@ -548,7 +548,7 @@ class BaseWindow(QMainWindow):
 
     def _on_log_entry(self, entry: LogEntry):
         """新日志条目的 UI 更新"""
-        color = _LOG_COLORS.get(entry.category, "#333333")
+        color = self._log_colors.get(entry.category, "#333333")
         html = (
             f'<span style="color:{color};white-space:pre;">'
             f'{entry.formatted()}'
@@ -584,7 +584,7 @@ class BaseWindow(QMainWindow):
             "<p>USART 串口参数写入工具</p>"
             "<p>协议格式: FF FF [DATA] 00 FF<br>"
             "DATA 范围: 0~255 (十进制)</p>"
-            "<p>Python 3.12 + PySide6 + pyserial</p>"
+            ##"<p>Python 3.12 + PySide6 + pyserial</p>"
         )
 
     def _save_current_config(self):

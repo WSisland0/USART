@@ -1,12 +1,13 @@
 """
 Serial Writer Tool - USART 串口参数写入工具
 
-入口模块，根据配置启动工业风或现代风窗口。
+入口模块，根据配置启动工业风、现代风或暗色风窗口。
 
 用法：
     python main.py                   # 使用 config.json 中的风格设置
     python main.py --industrial      # 强制使用工业风
     python main.py --modern          # 强制使用现代风
+    python main.py --dark            # 强制使用暗色风
 """
 
 import sys
@@ -21,6 +22,7 @@ from PySide6.QtGui import QIcon
 from core.config_manager import load_config, save_config
 from ui.industrial_window import IndustrialWindow
 from ui.modern_window import ModernWindow
+from ui.dark_window import DarkWindow
 
 
 def main(force_style: str = None):
@@ -28,7 +30,7 @@ def main(force_style: str = None):
     启动主窗口。
 
     参数:
-        force_style: "industrial" | "modern" | None。
+        force_style: "industrial" | "modern" | "dark" | None。
                      传 None 时按 命令行 > exe文件名 > 配置文件 顺序确定风格。
     """
     app = QApplication(sys.argv)
@@ -37,12 +39,14 @@ def main(force_style: str = None):
 
     config = load_config()
 
-    # 确定风格（优先级: force_style > 命令行 > exe文件名 > 配置 > 默认 modern）
-    style = config.get("style", "modern")
+    # 确定风格（优先级: force_style > 命令行 > exe文件名 > 配置 > 默认 dark）
+    style = config.get("style", "dark")
     if "--industrial" in sys.argv:
         style = "industrial"
     elif "--modern" in sys.argv:
         style = "modern"
+    elif "--dark" in sys.argv:
+        style = "dark"
     if force_style:
         style = force_style
     # PyInstaller 打包后，从 exe 文件名检测风格
@@ -51,11 +55,15 @@ def main(force_style: str = None):
         style = "industrial"
     elif "现代风" in exe_name or "modern" in exe_name:
         style = "modern"
+    elif "暗色" in exe_name or "dark" in exe_name:
+        style = "dark"
 
     if style == "industrial":
         window = IndustrialWindow()
-    else:
+    elif style == "modern":
         window = ModernWindow()
+    else:
+        window = DarkWindow()
 
     config["style"] = style
     save_config(config)
