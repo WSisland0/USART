@@ -10,6 +10,8 @@
 工业风和现代风窗口继承此类，仅覆盖 _get_stylesheet() 提供不同的 QSS。
 """
 
+from html import escape
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QLineEdit, QTextEdit,
@@ -19,7 +21,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIntValidator, QTextCursor, QAction
 
 from core.serial_manager import SerialManager
-from core.protocol import build_frame, to_hex_string, get_data_byte
+from core.protocol import ResponseParser, build_frame, format_response, to_hex_string
 from core.logger import LogManager, LogCategory, LogEntry
 from core.config_manager import load_config, save_config
 
@@ -43,6 +45,32 @@ def _bytes_to_ascii_str(data: bytes) -> str:
     return ''.join(result)
 
 
+def _format_raw_rx_display(data: bytes, mode: str) -> str | None:
+    """格式化无法解析为协议响应帧的原始接收数据。"""
+    if not data:
+        return None
+
+    if mode == "HEX":
+        display = _bytes_to_hex_str(data)
+    else:
+        display = _bytes_to_ascii_str(data)
+
+    if display.strip():
+        return display
+
+    hex_display = _bytes_to_hex_str(data)
+    return hex_display or None
+
+
+def _format_log_entry_html(entry: LogEntry, color: str) -> str:
+    """生成日志 HTML，避免 RX 中的 <- 被 QTextEdit 当成标签解析。"""
+    return (
+        f'<span style="color:{color};white-space:pre;">'
+        f'{escape(entry.formatted())}'
+        f'</span><br>'
+    )
+
+
 class BaseWindow(QMainWindow):
     """主窗口基类"""
 
@@ -64,6 +92,8 @@ class BaseWindow(QMainWindow):
 
         # 上次发送的值（用于参考）
         self._last_sent_value = _DEFAULT_DATA_VALUE
+        self._next_seq = 1
+        self._response_parser = ResponseParser()
 
         # ———————— 窗口基本设置 ————————
         self.setWindowTitle("Serial Writer Tool")
@@ -453,8 +483,9 @@ class BaseWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请输入有效的数值 (0~255)")
             return
 
+        seq = self._next_seq
         try:
-            frame = build_frame(value)
+            frame = build_frame(value, seq=seq)
         except ValueError as e:
             QMessageBox.warning(self, "提示", str(e))
             return
@@ -464,6 +495,8 @@ class BaseWindow(QMainWindow):
         hex_str = to_hex_string(frame)
         self._log_mgr.add_tx(hex_str)
         self._last_sent_value = value
+        self._next_seq = (seq + 1) & 0xFF
+        self._update_frame_display()
         self._save_current_config()
 
     def _on_send_done(self):
@@ -488,21 +521,22 @@ class BaseWindow(QMainWindow):
             value = 0
 
         try:
-            frame = build_frame(value)
+            frame = build_frame(value, seq=self._next_seq)
         except ValueError:
             return
 
-        # 构建 HTML，DATA 字节高亮
+        # 构建 HTML，SEQ 和 DigitalV 字节高亮
         hex_str = to_hex_string(frame)
         parts = hex_str.split(' ')
-        # 帧格式: FF FF [DATA] 00 FF
-        # parts[0]=FF, parts[1]=FF, parts[2]=DATA, parts[3]=00, parts[4]=FF
-        if len(parts) == 5:
+        # 帧格式: A5 5A SEQ DigitalV CRC_L CRC_H
+        if len(parts) == 6:
             html = (
                 f'{parts[0]} {parts[1]} '
-                f'<span style="color:#E65100;background:#FFF3E0;padding:2px 4px;">'
+                f'<span style="color:#1565C0;background:#E3F2FD;padding:2px 4px;">'
                 f'[{parts[2]}]</span>'
-                f' {parts[3]} {parts[4]}'
+                f' <span style="color:#E65100;background:#FFF3E0;padding:2px 4px;">'
+                f'[{parts[3]}]</span>'
+                f' {parts[4]} {parts[5]}'
             )
         else:
             html = hex_str
@@ -520,12 +554,25 @@ class BaseWindow(QMainWindow):
 
     def _on_data_received(self, data: bytes):
         """接收到串口数据"""
+        if not data:
+            return
+
+        raw_display = _bytes_to_hex_str(data)
+        if raw_display:
+            self._log_mgr.add_rx(f"RAW HEX: {raw_display}")
+
+        responses = self._response_parser.feed(data)
+        if responses:
+            for response in responses:
+                self._log_mgr.add_rx(format_response(response))
+            return
+        if self._response_parser.has_pending_data:
+            return
+
         mode = self._receive_mode_combo.currentText()
-        if mode == "HEX":
-            display = _bytes_to_hex_str(data)
-        else:
-            display = _bytes_to_ascii_str(data)
-        self._log_mgr.add_rx(display)
+        display = _format_raw_rx_display(data, mode)
+        if display:
+            self._log_mgr.add_rx(display)
 
     def _on_serial_error(self, error_msg: str):
         """串口错误"""
@@ -549,11 +596,7 @@ class BaseWindow(QMainWindow):
     def _on_log_entry(self, entry: LogEntry):
         """新日志条目的 UI 更新"""
         color = self._log_colors.get(entry.category, "#333333")
-        html = (
-            f'<span style="color:{color};white-space:pre;">'
-            f'{entry.formatted()}'
-            f'</span><br>'
-        )
+        html = _format_log_entry_html(entry, color)
         cursor = self._log_text.textCursor()
         cursor.movePosition(QTextCursor.End)
         cursor.insertHtml(html)
@@ -582,7 +625,7 @@ class BaseWindow(QMainWindow):
             self, "关于",
             "<h3>Serial Writer Tool</h3>"
             "<p>USART 串口参数写入工具</p>"
-            "<p>协议格式: FF FF [DATA] 00 FF<br>"
+            "<p>协议格式: A5 5A SEQ DigitalV CRC_L CRC_H<br>"
             "DATA 范围: 0~255 (十进制)</p>"
             ##"<p>Python 3.12 + PySide6 + pyserial</p>"
         )

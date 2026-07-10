@@ -368,6 +368,8 @@ class SerialManager(QObject):
 
     def _on_data_received(self, data: bytes):
         """接收读取线程的数据，转发到外部"""
+        if not data:
+            return
         self.data_received.emit(data)
 
     def _on_read_error(self, error_msg: str):
