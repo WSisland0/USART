@@ -1,5 +1,7 @@
- pyinstaller --onefile --windowed \
-    --name "SerialWriter-industrial" \
-    --add-data "assets;assets" \
-    --hidden-import serial.tools.list_ports \
-    main.py
+请先进入 SerialWriter 目录，再执行对应命令。
+
+现代风（使用新的中文文件名可避开 Windows 对旧 EXE 的图标缓存）：
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name "SerialWriter-现代风" --icon "assets/serial_writer.ico" --add-data "assets;assets" --hidden-import serial.tools.list_ports main.py
+
+工业风：
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name "SerialWriter-工业风" --icon "assets/serial_writer.ico" --add-data "assets;assets" --hidden-import serial.tools.list_ports main.py

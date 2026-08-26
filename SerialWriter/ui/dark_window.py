@@ -256,7 +256,7 @@ QTextEdit#logText {
     border-radius: 6px;
     color: #E2E8F0;
     font-family: "Cascadia Code", "JetBrains Mono", "Consolas", "Courier New", monospace;
-    font-size: 11px;
+    font-size: 12pt;
     selection-background-color: #2563EB;
     selection-color: #FFFFFF;
 }

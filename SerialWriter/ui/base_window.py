@@ -13,11 +13,11 @@
 from html import escape
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QComboBox, QPushButton, QLineEdit, QTextEdit,
-    QMessageBox, QFileDialog, QMenu, QSizePolicy, QFrame,
+    QMessageBox, QFileDialog, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIntValidator, QTextCursor, QAction
 
 from core.serial_manager import SerialManager
@@ -71,6 +71,24 @@ def _format_log_entry_html(entry: LogEntry, color: str) -> str:
     )
 
 
+def _format_frame_description_html(parts: list[str]) -> str:
+    """生成写入帧各字段的简要说明。"""
+    if len(parts) != 6:
+        return ""
+
+    return (
+        f'<b>{parts[0]} {parts[1]}</b> 帧头'
+        f'&nbsp;&nbsp;｜&nbsp;&nbsp;'
+        f'<span style="color:#1565C0;"><b>{parts[2]}</b></span> 序号 (SEQ)'
+        f'&nbsp;&nbsp;｜&nbsp;&nbsp;'
+        f'<span style="color:#E65100;"><b>{parts[3]}</b></span> 写入值 (DigitalV)'
+        f'&nbsp;&nbsp;｜&nbsp;&nbsp;'
+        f'<b>{parts[4]}</b> CRC16 低字节'
+        f'&nbsp;&nbsp;｜&nbsp;&nbsp;'
+        f'<b>{parts[5]}</b> CRC16 高字节'
+    )
+
+
 class BaseWindow(QMainWindow):
     """主窗口基类"""
 
@@ -98,7 +116,7 @@ class BaseWindow(QMainWindow):
         # ———————— 窗口基本设置 ————————
         self.setWindowTitle("Serial Writer Tool")
         self.resize(900, 700)
-        self.setMinimumSize(640, 500)
+        self.setMinimumSize(820, 660)
 
         # 应用样式表（子类提供）
         self.setStyleSheet(self._get_stylesheet())
@@ -151,14 +169,14 @@ class BaseWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setSpacing(8)
-        root.setContentsMargins(12, 8, 12, 8)
+        root.setSpacing(6)
+        root.setContentsMargins(12, 6, 12, 6)
 
         # 区域1：串口设置
         root.addWidget(self._create_serial_settings())
 
-        # 区域2：数据设置（主体，占用弹性空间）
-        root.addWidget(self._create_data_settings(), 1)
+        # 区域2：数据设置。保持紧凑高度，不随最大化产生大块空白。
+        root.addWidget(self._create_data_settings())
 
         # 区域3：帧展示区
         root.addWidget(self._create_frame_display())
@@ -170,76 +188,104 @@ class BaseWindow(QMainWindow):
 
     def _create_serial_settings(self) -> QGroupBox:
         group = QGroupBox("串口设置")
-        grid = QGridLayout(group)
-        grid.setSpacing(8)
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
 
         # 端口号
-        grid.addWidget(QLabel("端口号:"), 0, 0)
         self._port_combo = QComboBox()
-        self._port_combo.setMinimumWidth(100)
-        grid.addWidget(self._port_combo, 0, 1)
+        self._port_combo.setMinimumWidth(160)
         self._btn_refresh = QPushButton("刷新")
-        self._btn_refresh.setFixedWidth(60)
-        grid.addWidget(self._btn_refresh, 0, 2)
 
         # 波特率
-        grid.addWidget(QLabel("波特率:"), 0, 3)
         self._baud_combo = QComboBox()
         self._baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
         self._baud_combo.setCurrentText("9600")
-        grid.addWidget(self._baud_combo, 0, 4)
+
+        # 接收显示模式
+        self._receive_mode_combo = QComboBox()
+        self._receive_mode_combo.addItems(["HEX", "ASCII"])
+
+        # 第一行：端口占用更多空间，标签与选项保持成对排列。
+        first_row = QHBoxLayout()
+        first_row.setSpacing(10)
+        first_row.addWidget(
+            self._create_labeled_control("端口号:", self._port_combo), 2
+        )
+        first_row.addWidget(self._btn_refresh)
+        first_row.addSpacing(8)
+        first_row.addWidget(
+            self._create_labeled_control("波特率:", self._baud_combo), 1
+        )
+        first_row.addWidget(
+            self._create_labeled_control("接收显示:", self._receive_mode_combo), 1
+        )
+        layout.addLayout(first_row)
 
         # 数据位
-        grid.addWidget(QLabel("数据位:"), 1, 0)
         self._data_bits_combo = QComboBox()
         self._data_bits_combo.addItems(["5", "6", "7", "8"])
         self._data_bits_combo.setCurrentText("8")
-        grid.addWidget(self._data_bits_combo, 1, 1)
 
         # 校验位
-        grid.addWidget(QLabel("校验位:"), 1, 2)
         self._parity_combo = QComboBox()
         self._parity_combo.addItems(["None", "Even", "Odd"])
-        grid.addWidget(self._parity_combo, 1, 3)
 
         # 停止位
-        grid.addWidget(QLabel("停止位:"), 1, 4)
         self._stop_bits_combo = QComboBox()
         self._stop_bits_combo.addItems(["1", "1.5", "2"])
-        grid.addWidget(self._stop_bits_combo, 1, 5)
 
-        # 打开/关闭 + 状态
-        btn_row = QHBoxLayout()
+        # 第二行：三个串口参数等宽缩放。
+        second_row = QHBoxLayout()
+        second_row.setSpacing(10)
+        second_row.addWidget(
+            self._create_labeled_control("数据位:", self._data_bits_combo), 1
+        )
+        second_row.addWidget(
+            self._create_labeled_control("校验位:", self._parity_combo), 1
+        )
+        second_row.addWidget(
+            self._create_labeled_control("停止位:", self._stop_bits_combo), 1
+        )
+
+        # 打开/关闭 + 状态与参数放在同一行，减少纵向占用。
         self._btn_open = QPushButton("打开串口")
         self._btn_open.setObjectName("btnOpen")
         self._btn_close = QPushButton("关闭串口")
         self._btn_close.setObjectName("btnClose")
         self._btn_close.setEnabled(False)
         self._status_label = QLabel('● <span style="color:#9E9E9E;">未连接</span>')
-        self._status_label.setMinimumWidth(160)
+        self._status_label.setMinimumWidth(120)
 
-        btn_row.addWidget(self._btn_open)
-        btn_row.addWidget(self._btn_close)
-        btn_row.addSpacing(20)
-        btn_row.addWidget(self._status_label)
-        btn_row.addStretch()
-
-        grid.addLayout(btn_row, 2, 0, 1, 6)
-
-        # 接收显示模式
-        grid.addWidget(QLabel("接收显示:"), 0, 5)
-        self._receive_mode_combo = QComboBox()
-        self._receive_mode_combo.addItems(["HEX", "ASCII"])
-        grid.addWidget(self._receive_mode_combo, 0, 6)
+        second_row.addSpacing(8)
+        second_row.addWidget(self._btn_open)
+        second_row.addWidget(self._btn_close)
+        second_row.addWidget(self._status_label)
+        layout.addLayout(second_row)
 
         return group
+
+    def _create_labeled_control(self, text: str, control: QWidget) -> QWidget:
+        """创建标签紧贴输入控件、控件负责横向伸展的字段。"""
+        field = QWidget()
+        field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        field_layout = QHBoxLayout(field)
+        field_layout.setContentsMargins(0, 0, 0, 0)
+        field_layout.setSpacing(6)
+
+        label = QLabel(text)
+        label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        field_layout.addWidget(label)
+        field_layout.addWidget(control, 1)
+        return field
 
     # ---------- 区域2：数据设置 ----------
 
     def _create_data_settings(self) -> QGroupBox:
         group = QGroupBox("数据设置")
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout = QVBoxLayout(group)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         # 中央大输入框
         self._data_input = QLineEdit()
@@ -252,6 +298,7 @@ class BaseWindow(QMainWindow):
         self._data_input.setValidator(QIntValidator(0, 255))
         self._data_input.setText(str(_DEFAULT_DATA_VALUE))
         self._data_input.setObjectName("dataInput")
+        self._data_input.setMinimumHeight(68)
         layout.addWidget(self._data_input)
 
         # 微调按钮行 [-10] [-5] [-1] [+1] [+5] [+10]
@@ -290,7 +337,9 @@ class BaseWindow(QMainWindow):
 
     def _create_frame_display(self) -> QGroupBox:
         group = QGroupBox("帧预览")
-        layout = QHBoxLayout(group)
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(6)
 
         self._frame_label = QLabel()
         font = QFont("Consolas, Courier New, monospace")
@@ -300,6 +349,15 @@ class BaseWindow(QMainWindow):
         self._frame_label.setAlignment(Qt.AlignCenter)
         self._frame_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self._frame_label)
+
+        self._frame_description_label = QLabel()
+        self._frame_description_label.setObjectName("frameDescription")
+        self._frame_description_label.setAlignment(Qt.AlignCenter)
+        self._frame_description_label.setWordWrap(True)
+        self._frame_description_label.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        layout.addWidget(self._frame_description_label)
 
         return group
 
@@ -315,8 +373,9 @@ class BaseWindow(QMainWindow):
         self._log_text.setReadOnly(True)
         self._log_text.setObjectName("logText")
         font = QFont("Consolas, Courier New, monospace")
-        font.setPointSize(10)
+        font.setPointSize(12)
         self._log_text.setFont(font)
+        self._log_text.setMinimumHeight(70)
         layout.addWidget(self._log_text, 1)
 
         # 底部按钮
@@ -541,6 +600,9 @@ class BaseWindow(QMainWindow):
         else:
             html = hex_str
         self._frame_label.setText(html)
+        self._frame_description_label.setText(
+            _format_frame_description_html(parts)
+        )
 
     def _clamp_input_value(self):
         """输入框失去焦点时，确保值在 0~255 范围内"""

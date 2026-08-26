@@ -25,6 +25,21 @@ from ui.modern_window import ModernWindow
 from ui.dark_window import DarkWindow
 
 
+def _resource_path(relative_path: str) -> str:
+    """返回开发环境或 PyInstaller 单文件环境中的资源绝对路径。"""
+    base_path = getattr(
+        sys,
+        "_MEIPASS",
+        os.path.dirname(os.path.abspath(__file__)),
+    )
+    return os.path.join(base_path, relative_path)
+
+
+def _load_application_icon() -> QIcon:
+    """加载窗口和任务栏共用的软件图标。"""
+    return QIcon(_resource_path(os.path.join("assets", "serial_writer.ico")))
+
+
 def main(force_style: str = None):
     """
     启动主窗口。
@@ -36,6 +51,8 @@ def main(force_style: str = None):
     app = QApplication(sys.argv)
     app.setApplicationName("Serial Writer Tool")
     app.setOrganizationName("SerialWriter")
+    app_icon = _load_application_icon()
+    app.setWindowIcon(app_icon)
 
     config = load_config()
 
@@ -64,6 +81,9 @@ def main(force_style: str = None):
         window = ModernWindow()
     else:
         window = DarkWindow()
+
+    # 显式设置窗口图标，确保 Windows 标题栏和任务栏都能显示。
+    window.setWindowIcon(app_icon)
 
     config["style"] = style
     save_config(config)

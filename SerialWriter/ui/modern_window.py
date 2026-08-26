@@ -186,7 +186,7 @@ QTextEdit#logText {
     border-radius: 6px;
     color: #333333;
     font-family: "Consolas", "Courier New", monospace;
-    font-size: 11px;
+    font-size: 12pt;
 }
 """
 
